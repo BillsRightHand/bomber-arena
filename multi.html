@@ -27,7 +27,7 @@
     label.textContent = (i === 0 ? "開房 " : "加入 ") + room;
     var f = document.createElement("iframe");
     f.src = "index.html?touch=1&net=" + net + "&room=" + room + "&name=" + encodeURIComponent(names[i]) +
-      "&netauto=" + (i === 0 ? "host&netstart=" + (q.get("start") || n) + "&netseats=" + seats : "join");
+      (q.get("netdebug") ? "&netdebug=1" : "") + "&netauto=" + (i === 0 ? "host&netstart=" + (q.get("start") || n) + "&netseats=" + seats : "join");
     cell.appendChild(label);
     cell.appendChild(f);
     document.body.appendChild(cell);

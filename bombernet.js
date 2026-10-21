@@ -22,7 +22,9 @@
   }, window.BOMBER_NET || {});
 
   var N = null;
-  var log = function () { if (window.BOMBER_NET_DEBUG) console.log.apply(console, ["[BomberNet]"].concat([].slice.call(arguments))); };
+  // 網址加 netdebug=1 就把每一步印到 console（現場除錯用）
+  if (/[?&]netdebug=1/.test(location.search)) window.BOMBER_NET_DEBUG = true;
+  var log = function () { if (window.BOMBER_NET_DEBUG) console.log.apply(console, ["[BomberNet]", (performance.now() / 1000).toFixed(1)].concat([].slice.call(arguments))); };
 
   function rid() { return Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(-4); }
   function push(type, peer, data, msg) { if (N) N.events.push({ type: type, peer: peer, data: data || null, msg: msg || "" }); }
@@ -71,6 +73,8 @@
   function sig(obj) {
     if (!N || !N.sig) return;
     obj.from = N.myId;
+    N.sigOut = (N.sigOut || 0) + 1;
+    log("sig ->", obj.t, obj.to || "", obj.sdp ? obj.sdp.sdp.length + "B" : "");
     N.sig.send(obj);
   }
 
@@ -92,7 +96,7 @@
     ch.binaryType = "arraybuffer";
     if (ch.label === "r") peer.rel = ch; else peer.unrel = ch;
     ch.onopen = function () { checkOpen(peer); };
-    ch.onclose = function () { drop(peer); };
+    ch.onclose = function () { log("channel close", peer.num, ch.label); drop(peer); };
     ch.onmessage = function (e) {
       if (typeof e.data === "string") return;
       push(2, peer.num, new Uint8Array(e.data));
@@ -119,8 +123,10 @@
   }
 
   function watchPc(peer) {
+    peer.pc.oniceconnectionstatechange = function () { log("ice", peer.num, peer.pc.iceConnectionState); };
     peer.pc.onconnectionstatechange = function () {
       var s = peer.pc.connectionState;
+      log("conn", peer.num, s);
       if (s === "failed" || s === "closed") drop(peer);
       else if (s === "disconnected") setTimeout(function () { if (peer.pc.connectionState === "disconnected") drop(peer); }, 5000);
     };
@@ -130,6 +136,8 @@
 
   function hostOnSig(m) {
     if (!m || m.from === N.myId) return;
+    N.sigIn = (N.sigIn || 0) + 1;
+    log("sig <-", m.t, m.from);
     if (m.t === "join") {
       var old = N.byId.get(m.from);
       if (old && (old.open || !old.gone)) { if (old.offer) sig({ t: "offer", to: m.from, sdp: old.offer }); return; }
@@ -167,6 +175,8 @@
 
   function clientOnSig(m) {
     if (!m || m.from === N.myId) return;
+    N.sigIn = (N.sigIn || 0) + 1;
+    log("sig <-", m.t, m.to === N.myId ? "(to me)" : "");
     if (m.t === "offer" && m.to === N.myId && !N.hostPeer) clientAccept(m);
   }
 
@@ -180,7 +190,11 @@
     peer.pc.ondatachannel = function (e) { wireChannel(peer, e.channel); };
     watchPc(peer);
     peer.timer = setTimeout(function () {
-      if (!peer.open) { push(3, 0, null, "連不上房主（大家連同一個 Wi-Fi 再試一次）"); drop(peer); }
+      if (peer.open || !N || N.hostPeer !== peer) return;
+      drop(peer);
+      // 沒連上：換一個身分重新加入（主機那邊舊的那條 15 秒後自己丟掉），最多試 3 次
+      if (N.attempts < 3) { log("connect timeout, retry", N.attempts); N.hostPeer = null; N.myId = rid(); startJoin(); }
+      else push(3, 0, null, "連不上房主（大家連同一個 Wi-Fi 再試一次）");
     }, CFG.connectTimeoutMs);
     peer.pc.setRemoteDescription(m.sdp)
       .then(function () { return peer.pc.createAnswer(); })
@@ -191,6 +205,21 @@
         log("answer sent");
       })
       .catch(function (e) { log("answer fail", e); push(3, 0, null, "連線失敗"); drop(peer); });
+  }
+
+  /** 客人：每 1.5 秒喊一次「我要加入」，直到收到房主的 offer；12 秒都沒回應就報錯。 */
+  function startJoin() {
+    N.attempts = (N.attempts || 0) + 1;
+    clearInterval(N.joinTimer);
+    clearTimeout(N.joinGiveUp);
+    var hello = function () { sig({ t: "join" }); };
+    hello();
+    N.joinTimer = setInterval(hello, 1500);
+    N.joinGiveUp = setTimeout(function () {
+      if (!N || N.hostPeer) return;
+      clearInterval(N.joinTimer);
+      push(3, 0, null, "找不到這個房間（房號對嗎？房主開房了嗎？）");
+    }, CFG.joinTimeoutMs);
   }
 
   // ------------------------------------------------------------------ 對 Unity 的介面
@@ -207,14 +236,7 @@
     if (isHost) {
       sig({ t: "host", since: N.since });
     } else {
-      var hello = function () { sig({ t: "join" }); };
-      hello();
-      N.joinTimer = setInterval(hello, 1500);
-      N.joinGiveUp = setTimeout(function () {
-        if (!N || N.hostPeer) return;
-        clearInterval(N.joinTimer);
-        push(3, 0, null, "找不到這個房間（房號對嗎？房主開房了嗎？）");
-      }, CFG.joinTimeoutMs);
+      startJoin();
     }
     log("start", isHost ? "host" : "join", room, wantLocal ? "local" : "supabase", N.myId);
     return 1;
@@ -254,6 +276,12 @@
   window.addEventListener("pagehide", close);
   window.BomberNet = {
     start: start, send: send, poll: poll, disconnect: disconnect, close: close,
-    get state() { return N ? { host: N.host, room: N.room, peers: Array.from(N.peers.values()).map(function (p) { return { num: p.num, open: p.open, ice: p.pc.iceConnectionState }; }), queued: N.events.length } : null; },
+    get state() {
+      return N ? { host: N.host, room: N.room, sigIn: N.sigIn || 0, sigOut: N.sigOut || 0,
+        peers: Array.from(N.peers.values()).map(function (p) {
+          return { num: p.num, open: p.open, ice: p.pc.iceConnectionState, conn: p.pc.connectionState, sig: p.pc.signalingState,
+            r: p.rel ? p.rel.readyState : "-", u: p.unrel ? p.unrel.readyState : "-" };
+        }), queued: N.events.length } : null;
+    },
   };
 })();
