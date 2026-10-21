@@ -27,7 +27,6 @@
   <div id="bar"><div id="fill"></div></div>
   <div id="err"></div>
 </div>
-<script>window.BOMBER_CDN="https://cdn.jsdelivr.net/gh/BillsRightHand/bomber-arena@6a15a0e1dae40379a50a7d09a78fa0329853e6c8/Build";</script>
 <script src="bombernet.js"></script>
 <script>
   var canvas = document.querySelector("#unity-canvas");
@@ -72,6 +71,15 @@
   document.body.appendChild(script);
   // 嵌在 iframe 裡（方舟網頁版、multi.html）時，第一下點擊只會拿到焦點、按鈕沒反應：按下去就先把焦點給遊戲畫布
   window.addEventListener("pointerdown", function () { if (document.activeElement !== canvas) { window.focus(); canvas.focus(); } }, true);
+  // 手機：第一下點擊時試著全螢幕＋鎖橫向（Android Chrome 可以；iPhone、方舟的 WebView 不行就算了，遊戲裡會請玩家自己轉）
+  var isMobile = /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent);
+  if (isMobile) window.addEventListener("pointerdown", function () {
+    try {
+      var el = document.documentElement;
+      var fs = el.requestFullscreen ? el.requestFullscreen({ navigationUI: "hide" }) : null;
+      Promise.resolve(fs).then(function () { if (screen.orientation && screen.orientation.lock) return screen.orientation.lock("landscape"); }).catch(function () {});
+    } catch (e) {}
+  }, { once: true, capture: true });
 </script>
 </body>
 </html>

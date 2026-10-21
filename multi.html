@@ -9,6 +9,7 @@
   .cell { display: flex; flex-direction: column; gap: 2px; }
   .cell span { font-size: 12px; opacity: .7; }
   iframe { width: 300px; height: 620px; border: 0; border-radius: 8px; background: #f4ecd8; }
+  body.land iframe { width: 844px; height: 390px; }   /* 手機橫拿的大小 */
 </style>
 </head>
 <body>
@@ -20,6 +21,7 @@
   var net = q.get("net") || "local";
   var seats = q.get("seats") || String(n);
   var names = ["房主", "小明", "阿華", "小美", "大雄", "胖虎"];
+  if (q.get("land") !== "0") document.body.className = "land";   // 預設模擬橫拿的手機
   for (var i = 0; i < n; i++) {
     var cell = document.createElement("div");
     cell.className = "cell";
