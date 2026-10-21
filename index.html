@@ -33,7 +33,15 @@
   var loader = document.querySelector("#loader");
   var fill = document.querySelector("#fill");
   var err = document.querySelector("#err");
-  var buildUrl = "Build";
+  // 大檔（wasm、data）可以從 CDN 拿：發佈腳本（Tools/publish_pages.sh）會塞 window.BOMBER_CDN（jsDelivr，釘在某個 commit）。
+  // GitHub Pages 在台灣常常很慢；CDN 失敗就加 nocdn=1 重新整理，改從同一個網站拿。
+  var noCdn = /[?&]nocdn=1/.test(location.search);
+  var buildUrl = (!noCdn && window.BOMBER_CDN) || "Build";
+  function fallback(why) {
+    if (buildUrl === "Build") return false;
+    location.replace(location.href + (location.search ? "&" : "?") + "nocdn=1");
+    return true;
+  }
   var config = {
     arguments: [],
     dataUrl: buildUrl + "/WebGL.data.unityweb",
@@ -49,6 +57,7 @@
   };
   var script = document.createElement("script");
   script.src = buildUrl + "/WebGL.loader.js";
+  script.onerror = function () { if (!fallback()) { err.style.display = "block"; err.textContent = "載入失敗，請重新整理"; } };
   script.onload = function () {
     createUnityInstance(canvas, config, function (p) { fill.style.width = Math.round(p * 100) + "%"; })
       .then(function (instance) {
@@ -57,7 +66,7 @@
         setTimeout(function () { loader.remove(); }, 400);
         canvas.focus();
       })
-      .catch(function (m) { err.style.display = "block"; err.textContent = "載入失敗：" + m; });
+      .catch(function (m) { if (!fallback()) { err.style.display = "block"; err.textContent = "載入失敗：" + m; } });
   };
   document.body.appendChild(script);
   // 嵌在 iframe 裡（方舟網頁版、multi.html）時，第一下點擊只會拿到焦點、按鈕沒反應：按下去就先把焦點給遊戲畫布
