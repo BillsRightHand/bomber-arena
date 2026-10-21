@@ -4,6 +4,14 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, height=device-height, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="轟炸超人">
+<meta name="theme-color" content="#f4ecd8">
+<!-- 加入主畫面後從圖示打開：全螢幕、橫向、沒有瀏覽器外框（iPhone 的 Safari 不能用按鈕全螢幕，只能這樣） -->
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon-192.png">
+<link rel="icon" type="image/png" href="icon-192.png">
 <title>BomberArena</title>
 <style>
   /* 方舟小遊戲：整頁就是遊戲畫面；載入中是方舟的米色紙＋墨色進度條（跟方舟 WebView 的底色 #f4ecd8 一樣，打開不會閃白） */
@@ -27,7 +35,6 @@
   <div id="bar"><div id="fill"></div></div>
   <div id="err"></div>
 </div>
-<script>window.BOMBER_CDN="https://cdn.jsdelivr.net/gh/BillsRightHand/bomber-arena@7883a194eb94ad344ea77751c0a6f2ff244cf140/Build";</script>
 <script src="bombernet.js"></script>
 <script>
   var canvas = document.querySelector("#unity-canvas");
@@ -72,15 +79,26 @@
   document.body.appendChild(script);
   // 嵌在 iframe 裡（方舟網頁版、multi.html）時，第一下點擊只會拿到焦點、按鈕沒反應：按下去就先把焦點給遊戲畫布
   window.addEventListener("pointerdown", function () { if (document.activeElement !== canvas) { window.focus(); canvas.focus(); } }, true);
-  // 手機：第一下點擊時試著全螢幕＋鎖橫向（Android Chrome 可以；iPhone、方舟的 WebView 不行就算了，遊戲裡會請玩家自己轉）
-  var isMobile = /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent);
-  if (isMobile) window.addEventListener("pointerdown", function () {
-    try {
+  // 全螢幕（遊戲裡的「全螢幕」鈕）：瀏覽器只准在使用者按下／放開的那一刻全螢幕，
+  // 所以 Unity 按下去時只記一筆（BomberFS.request），等手指放開（pointerup／touchend，仍算使用者動作）才真的進全螢幕＋鎖橫向。
+  window.BomberFS = {
+    pending: false,
+    supported: function () { return !!(document.fullscreenEnabled || document.webkitFullscreenEnabled); },
+    active: function () { return !!(document.fullscreenElement || document.webkitFullscreenElement); },
+    // iPhone 的 Safari 不給網頁全螢幕；從主畫面圖示打開（standalone）本來就沒有外框
+    ios: function () { return /iPhone|iPod/.test(navigator.userAgent); },
+    standalone: function () { return (window.matchMedia && matchMedia("(display-mode: standalone), (display-mode: fullscreen)").matches) || navigator.standalone === true; },
+    request: function () { this.pending = true; },
+    enter: function () {
       var el = document.documentElement;
-      var fs = el.requestFullscreen ? el.requestFullscreen({ navigationUI: "hide" }) : null;
-      Promise.resolve(fs).then(function () { if (screen.orientation && screen.orientation.lock) return screen.orientation.lock("landscape"); }).catch(function () {});
-    } catch (e) {}
-  }, { once: true, capture: true });
+      var go = el.requestFullscreen ? el.requestFullscreen({ navigationUI: "hide" }) : el.webkitRequestFullscreen ? el.webkitRequestFullscreen() : null;
+      Promise.resolve(go).then(function () { if (screen.orientation && screen.orientation.lock) return screen.orientation.lock("landscape"); }).catch(function () {});
+    },
+  };
+  var fsGesture = function () { if (window.BomberFS.pending) { window.BomberFS.pending = false; window.BomberFS.enter(); } };
+  document.addEventListener("pointerup", fsGesture, true);
+  document.addEventListener("touchend", fsGesture, true);
+  document.addEventListener("click", fsGesture, true);
 </script>
 </body>
 </html>
