@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<title>轟炸超人・同桌連線測試</title>
+<style>
+  /* 一頁開好幾個遊戲（直式手機大小）：第一個開房、其他加入，配對走同一個瀏覽器的 BroadcastChannel（net=local） */
+  body { margin: 0; background: #2a2622; display: flex; flex-wrap: wrap; gap: 6px; padding: 6px; font-family: sans-serif; color: #eee; }
+  .cell { display: flex; flex-direction: column; gap: 2px; }
+  .cell span { font-size: 12px; opacity: .7; }
+  iframe { width: 300px; height: 620px; border: 0; border-radius: 8px; background: #f4ecd8; }
+</style>
+</head>
+<body>
+<script>
+  // 用法：multi.html?n=3&seats=4&net=local&room=7788
+  var q = new URLSearchParams(location.search);
+  var n = Math.max(1, Math.min(6, +(q.get("n") || 3)));
+  var room = q.get("room") || String(1000 + Math.floor(Math.random() * 9000));
+  var net = q.get("net") || "local";
+  var seats = q.get("seats") || String(n);
+  var names = ["房主", "小明", "阿華", "小美", "大雄", "胖虎"];
+  for (var i = 0; i < n; i++) {
+    var cell = document.createElement("div");
+    cell.className = "cell";
+    var label = document.createElement("span");
+    label.textContent = (i === 0 ? "開房 " : "加入 ") + room;
+    var f = document.createElement("iframe");
+    f.src = "index.html?touch=1&net=" + net + "&room=" + room + "&name=" + encodeURIComponent(names[i]) +
+      "&netauto=" + (i === 0 ? "host&netstart=" + (q.get("start") || n) + "&netseats=" + seats : "join");
+    cell.appendChild(label);
+    cell.appendChild(f);
+    document.body.appendChild(cell);
+  }
+</script>
+</body>
+</html>

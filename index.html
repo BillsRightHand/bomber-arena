@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, height=device-height, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>BomberArena</title>
+<style>
+  /* 方舟小遊戲：整頁就是遊戲畫面；載入中是方舟的米色紙＋墨色進度條（跟方舟 WebView 的底色 #f4ecd8 一樣，打開不會閃白） */
+  html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: #f4ecd8;
+    touch-action: none; -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; -webkit-tap-highlight-color: transparent; }
+  #unity-canvas { position: fixed; inset: 0; width: 100%; height: 100%; display: block; background: #9fbcd6; outline: none; }
+  #loader { position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center;
+    background: #f4ecd8; color: #3a3128; font-family: -apple-system, "PingFang TC", "Noto Sans TC", sans-serif; transition: opacity .35s; }
+  #loader .t { font-size: 24px; font-weight: 700; letter-spacing: .12em; }
+  #loader .s { font-size: 14px; color: #7a6a58; margin-top: 8px; }
+  #bar { width: min(60vw, 320px); height: 10px; border-radius: 99px; background: #e6d3ab; overflow: hidden; margin-top: 22px; }
+  #fill { height: 100%; width: 0; background: #3a3128; border-radius: 99px; transition: width .2s; }
+  #err { display: none; max-width: 80vw; margin-top: 16px; font-size: 13px; color: #c2382e; text-align: center; }
+</style>
+</head>
+<body>
+<canvas id="unity-canvas" tabindex="-1"></canvas>
+<div id="loader">
+  <div class="t">轟炸超人</div>
+  <div class="s">方舟小遊戲・載入中</div>
+  <div id="bar"><div id="fill"></div></div>
+  <div id="err"></div>
+</div>
+<script src="bombernet.js"></script>
+<script>
+  var canvas = document.querySelector("#unity-canvas");
+  var loader = document.querySelector("#loader");
+  var fill = document.querySelector("#fill");
+  var err = document.querySelector("#err");
+  var buildUrl = "Build";
+  var config = {
+    arguments: [],
+    dataUrl: buildUrl + "/WebGL.data.unityweb",
+    frameworkUrl: buildUrl + "/WebGL.framework.js.unityweb",
+    codeUrl: buildUrl + "/WebGL.wasm.unityweb",
+    streamingAssetsUrl: "StreamingAssets",
+    companyName: "Ciro",
+    productName: "BomberArena",
+    productVersion: "0.2.0",
+    // 手機像素密度最多 2 倍：3 倍螢幕全解析度太吃效能、會發熱
+    devicePixelRatio: Math.min(window.devicePixelRatio || 1, 2),
+    showBanner: function (msg, type) { if (type === "error") { err.style.display = "block"; err.textContent = msg; } },
+  };
+  var script = document.createElement("script");
+  script.src = buildUrl + "/WebGL.loader.js";
+  script.onload = function () {
+    createUnityInstance(canvas, config, function (p) { fill.style.width = Math.round(p * 100) + "%"; })
+      .then(function (instance) {
+        window.unityInstance = instance;
+        loader.style.opacity = "0";
+        setTimeout(function () { loader.remove(); }, 400);
+        canvas.focus();
+      })
+      .catch(function (m) { err.style.display = "block"; err.textContent = "載入失敗：" + m; });
+  };
+  document.body.appendChild(script);
+  // 嵌在 iframe 裡（方舟網頁版、multi.html）時，第一下點擊只會拿到焦點、按鈕沒反應：按下去就先把焦點給遊戲畫布
+  window.addEventListener("pointerdown", function () { if (document.activeElement !== canvas) { window.focus(); canvas.focus(); } }, true);
+</script>
+</body>
+</html>
