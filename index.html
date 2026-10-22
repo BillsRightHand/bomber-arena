@@ -35,7 +35,6 @@
   <div id="bar"><div id="fill"></div></div>
   <div id="err"></div>
 </div>
-<script>window.BOMBER_CDN="https://cdn.jsdelivr.net/gh/BillsRightHand/bomber-arena@c74885892cb60d5f92e6b2f953259f0bced39ece/Build";</script>
 <script src="bombernet.js"></script>
 <script>
   var canvas = document.querySelector("#unity-canvas");
@@ -112,12 +111,25 @@
       return location.origin + location.pathname + "?openExternalBrowser=1#room=" + encodeURIComponent(room) + "&netauto=join" + (extra || "");
     },
     request: function (kind, text, room, extra) { this.pending = { kind: kind, text: text, room: room, extra: extra }; },
+    // 直接打開 LINE App 的「選擇傳送對象」（老闆 10-22：不要開網頁）：Android 用 intent（沒裝 LINE 會去商店）、
+    // iPhone／iPad 用 line:// ；電腦才開網頁版。開不了 App 時頁面不會被換掉（房主的房間還在）。
+    lineUrl: function (msg, ua) {
+      var enc = encodeURIComponent(msg);
+      if (/Android/i.test(ua)) return "intent://msg/text/?" + enc + "#Intent;scheme=line;package=jp.naver.line.android;end";
+      if (/iPhone|iPad|iPod/i.test(ua) || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1)) return "line://msg/text/?" + enc;
+      return "https://line.me/R/msg/text/?" + enc;
+    },
+    go: function (target) {
+      if (/^https:/.test(target)) { window.open(target, "_blank"); return; }
+      // 嵌在點餐網站的 iframe 裡時，由最外層去開 App（iframe 自己開外部 App 常常被擋）
+      try { (window.top || window).location.href = target; } catch (e) { location.href = target; }
+    },
     run: function () {
       var p = this.pending;
       this.pending = null;
       if (!p) return;
       var u = this.url(p.room, p.extra);
-      if (p.kind === "line") { window.open("https://line.me/R/share?text=" + encodeURIComponent(p.text + "\n" + u), "_blank"); return; }
+      if (p.kind === "line") { this.go(this.lineUrl(p.text + "\n" + u, navigator.userAgent)); return; }
       if (navigator.clipboard && navigator.clipboard.writeText && window.isSecureContext) { navigator.clipboard.writeText(u).catch(function () {}); return; }
       var ta = document.createElement("textarea");
       ta.value = u; ta.setAttribute("readonly", ""); ta.style.position = "fixed"; ta.style.opacity = "0";
