@@ -399,9 +399,22 @@
     if (n.sig) n.sig.close();
   }
 
+  /** 除錯：每條連線是直連還是繞中繼、ICE 量到的來回延遲（毫秒，不受分頁在背景影響）。 */
+  function stats() {
+    if (!N) return Promise.resolve(null);
+    return Promise.all(Array.from(N.peers.values()).map(function (p) {
+      if (!p.pc || !p.pc.getStats) return Promise.resolve({ num: p.num });
+      return p.pc.getStats().then(function (st) {
+        var rtt = null;
+        st.forEach(function (s) { if (s.type === "candidate-pair" && s.state === "succeeded" && s.nominated && s.currentRoundTripTime != null) rtt = Math.round(s.currentRoundTripTime * 1000); });
+        return { num: p.num, path: p.path || "?", rttMs: rtt };
+      });
+    }));
+  }
+
   window.addEventListener("pagehide", close);
   window.BomberNet = {
-    start: start, send: send, poll: poll, disconnect: disconnect, close: close,
+    start: start, send: send, poll: poll, disconnect: disconnect, close: close, stats: stats,
     get state() {
       return N ? { host: N.host, room: N.room, sigIn: N.sigIn || 0, sigOut: N.sigOut || 0,
         peers: Array.from(N.peers.values()).map(function (p) {
