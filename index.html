@@ -35,7 +35,6 @@
   <div id="bar"><div id="fill"></div></div>
   <div id="err"></div>
 </div>
-<script>window.BOMBER_CDN="https://cdn.jsdelivr.net/gh/BillsRightHand/bomber-arena@96877f5db29a61766a2084e70bb0cb6fa32a3147/Build";</script>
 <script src="bombernet.js"></script>
 <script>
   var canvas = document.querySelector("#unity-canvas");
@@ -103,7 +102,33 @@
       Promise.resolve(go).then(function () { if (screen.orientation && screen.orientation.lock) return screen.orientation.lock("landscape"); }).catch(function () {});
     },
   };
-  var fsGesture = function () { if (window.BomberFS.pending) { window.BomberFS.pending = false; window.BomberFS.enter(); } };
+  // 邀請朋友（同桌連線房間頁的「用 LINE 邀請」「複製連結」）：連結點了直接進這個房間（# 後面 room＝房號、netauto=join）。
+  // openExternalBrowser=1：從 LINE 點開時改用手機自己的瀏覽器（比 LINE 內建的順、Android 也能全螢幕）。
+  // 跟全螢幕一樣要在使用者動作裡做（iPhone 才准開 LINE、寫剪貼簿）：Unity 按下去先記一筆，手指放開那一刻才真的做。
+  window.BomberInvite = {
+    pending: null,
+    url: function (room, extra) {
+      return location.origin + location.pathname + "?openExternalBrowser=1#room=" + encodeURIComponent(room) + "&netauto=join" + (extra || "");
+    },
+    request: function (kind, text, room, extra) { this.pending = { kind: kind, text: text, room: room, extra: extra }; },
+    run: function () {
+      var p = this.pending;
+      this.pending = null;
+      if (!p) return;
+      var u = this.url(p.room, p.extra);
+      if (p.kind === "line") { window.open("https://line.me/R/share?text=" + encodeURIComponent(p.text + "\n" + u), "_blank"); return; }
+      if (navigator.clipboard && navigator.clipboard.writeText && window.isSecureContext) { navigator.clipboard.writeText(u).catch(function () {}); return; }
+      var ta = document.createElement("textarea");
+      ta.value = u; ta.setAttribute("readonly", ""); ta.style.position = "fixed"; ta.style.opacity = "0";
+      document.body.appendChild(ta); ta.select(); ta.setSelectionRange(0, u.length);
+      try { document.execCommand("copy"); } catch (e) {}
+      ta.remove();
+    },
+  };
+  var fsGesture = function () {
+    if (window.BomberFS.pending) { window.BomberFS.pending = false; window.BomberFS.enter(); }
+    if (window.BomberInvite.pending) window.BomberInvite.run();
+  };
   document.addEventListener("pointerup", fsGesture, true);
   document.addEventListener("touchend", fsGesture, true);
   document.addEventListener("click", fsGesture, true);
