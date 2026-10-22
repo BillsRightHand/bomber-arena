@@ -399,6 +399,63 @@
     if (n.sig) n.sig.close();
   }
 
+  // ------------------------------------------------------------------ 房間列表（老闆 10-22：要能看到大家開的房間、自己加入）
+
+  // 開房的人每 5 秒在共用頻道 "lobby" 喊一次自己的房間（房號、房主暱稱、人數、模式、地圖、是不是正在打）；
+  // 看列表的人收集起來，12 秒沒更新就拿掉。剛打開列表喊一聲 who，房主馬上回，不用等 5 秒；上鎖、關房喊 gone。
+  var L = null;
+
+  function lobbySig(mode) {
+    if (L) return L;
+    L = { rooms: new Map(), ad: null, timer: null, viewing: false };
+    var onMsg = function (m) {
+      if (!L || !m) return;
+      if (m.t === "room" && m.room) { m.at = Date.now(); L.rooms.set(m.room, m); }
+      else if (m.t === "gone" && m.room) L.rooms.delete(m.room);
+      else if (m.t === "who" && L.ad) L.sig.send(L.ad);
+    };
+    var onReady = function () { if (!L) return; if (L.ad) L.sig.send(L.ad); if (L.viewing) L.sig.send({ t: "who" }); };
+    L.sig = mode === "local" ? LocalSig("lobby", onMsg) : SupaSig("lobby", onMsg, function (e) { log("lobby error", e); }, onReady);
+    return L;
+  }
+
+  function lobbyMaybeClose() {
+    if (!L || L.ad || L.viewing) return;
+    clearInterval(L.timer);
+    L.sig.close();
+    L = null;
+  }
+
+  /** 房主：公告／更新自己的房間（json 空字串＝撤下：上鎖、關房）。 */
+  function advertise(json, mode) {
+    var ad = json ? JSON.parse(json) : null;
+    if (!ad) {
+      if (L && L.ad) { L.sig.send({ t: "gone", room: L.ad.room }); L.ad = null; clearInterval(L.timer); L.timer = null; lobbyMaybeClose(); }
+      return;
+    }
+    lobbySig(mode);
+    ad.t = "room";
+    var first = !L.ad;
+    L.ad = ad;
+    L.sig.send(ad);
+    if (first) L.timer = setInterval(function () { if (L && L.ad) L.sig.send(L.ad); }, 5000);
+  }
+
+  function viewRooms(mode) { lobbySig(mode); L.viewing = true; L.sig.send({ t: "who" }); }
+  function stopRooms() { if (!L) return; L.viewing = false; L.rooms.clear(); lobbyMaybeClose(); }
+
+  /** 現在看得到的房間（不含自己開的），沒在打的排前面。 */
+  function roomsJson() {
+    if (!L) return "[]";
+    var now = Date.now(), out = [];
+    L.rooms.forEach(function (r, k) {
+      if (now - r.at > 12000) L.rooms.delete(k);
+      else if (!L.ad || L.ad.room !== r.room) out.push(r);
+    });
+    out.sort(function (a, b) { return (a.playing ? 1 : 0) - (b.playing ? 1 : 0) || b.at - a.at; });
+    return JSON.stringify(out.slice(0, 20));
+  }
+
   /** 除錯：每條連線是直連還是繞中繼、ICE 量到的來回延遲（毫秒，不受分頁在背景影響）。 */
   function stats() {
     if (!N) return Promise.resolve(null);
@@ -412,9 +469,13 @@
     }));
   }
 
-  window.addEventListener("pagehide", close);
+  window.addEventListener("pagehide", function () {
+    if (L && L.ad) { try { L.sig.send({ t: "gone", room: L.ad.room }); } catch (x) {} }
+    close();
+  });
   window.BomberNet = {
     start: start, send: send, poll: poll, disconnect: disconnect, close: close, stats: stats,
+    lobby: { advertise: advertise, view: viewRooms, stop: stopRooms, json: roomsJson },
     get state() {
       return N ? { host: N.host, room: N.room, sigIn: N.sigIn || 0, sigOut: N.sigOut || 0,
         peers: Array.from(N.peers.values()).map(function (p) {
