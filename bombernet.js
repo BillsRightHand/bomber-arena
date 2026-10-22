@@ -7,7 +7,9 @@
  *   連上之後遊戲資料全部走 WebRTC，不經過 Supabase。
  * - 不等 trickle ICE：收集完候選（最多 2.5 秒）才把整包 SDP 送出去，訊息少、好除錯。
  * Unity 端（Assets/Plugins/WebGL/BomberNet.jslib）呼叫 window.BomberNet 的 start／send／poll／close。
- * 事件型別跟 C# 的 NetEventType 一樣：0 連上、1 斷線、2 資料、3 錯誤。
+ * 事件型別跟 C# 的 NetEventType 一樣：0 連上、1 斷線、2 資料、3 錯誤、4 狀態說明（給客人看「正在等什麼」）。
+ * 10-22 豆豆點 LINE 邀請連結進不來：房主切到 LINE 時瀏覽器把遊戲頁暫停、配對的 websocket 被切斷又不會重連，
+ * 客人只等 12 秒就放棄。現在：websocket 斷了自己重連、切回畫面立刻重連；客人等房主最多 60 秒、一路說明在等什麼。
  */
 (function () {
   "use strict";
@@ -17,7 +19,7 @@
     anonKey: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inhva3JiZ2VsZHdzaXl3a3VnZmt4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODc4MDIwNzAsImV4cCI6MjEwMzM3ODA3MH0.RiweNtahU8a5ZOZiq2kvpsuJwKLDdDed4PASIG1wfXU",
     stun: ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302"],
     iceWaitMs: 2500,
-    joinTimeoutMs: 12000,
+    joinTimeoutMs: 60000,
     connectTimeoutMs: 15000,
   }, window.BOMBER_NET || {});
 
@@ -37,37 +39,78 @@
     return { send: function (m) { bc.postMessage(m); }, close: function () { bc.close(); } };
   }
 
-  /** Supabase Realtime（Phoenix websocket 協定）最小實作：加入頻道、廣播 "sig"、25 秒心跳。 */
-  function SupaSig(room, onMsg, onError) {
+  /**
+   * Supabase Realtime（Phoenix websocket 協定）最小實作：加入頻道、廣播 "sig"、25 秒心跳。
+   * 斷線（手機切到別的 App、網路換手、伺服器踢掉）就自己重連（1、2、4…最多 10 秒）；畫面切回來、網路恢復時馬上重連。
+   * 每次重新加入頻道成功都呼叫 onReady（房主用來重新喊一次「我在這」）。連續失敗 6 次才報錯。
+   */
+  function SupaSig(room, onMsg, onError, onReady) {
     var url = CFG.supabaseUrl.replace(/^http/, "ws") + "/realtime/v1/websocket?apikey=" + encodeURIComponent(CFG.anonKey) + "&vsn=1.0.0";
     var topic = "realtime:bomber:" + room;
-    var ref = 1, joinRef = "1", joined = false, closed = false, queue = [], hb = null;
-    var ws = new WebSocket(url);
-    function raw(o) { if (ws.readyState === 1) ws.send(JSON.stringify(o)); }
-    ws.onopen = function () {
-      raw({ topic: topic, event: "phx_join", ref: joinRef, join_ref: joinRef,
-        payload: { config: { broadcast: { ack: false, self: false }, presence: { key: "" }, postgres_changes: [], private: false }, access_token: CFG.anonKey } });
-      hb = setInterval(function () { raw({ topic: "phoenix", event: "heartbeat", payload: {}, ref: String(++ref) }); }, 25000);
-    };
-    ws.onmessage = function (e) {
-      var m; try { m = JSON.parse(e.data); } catch (x) { return; }
-      if (m.topic !== topic) return;
-      if (m.event === "phx_reply" && m.ref === joinRef) {
-        if (m.payload && m.payload.status === "ok") { joined = true; queue.splice(0).forEach(send); log("realtime joined", topic); }
-        else onError("配對伺服器拒絕連線");
-      } else if (m.event === "broadcast" && m.payload && m.payload.event === "sig") {
-        onMsg(m.payload.payload);
-      } else if (m.event === "phx_error" || m.event === "phx_close") {
-        if (!closed) onError("配對伺服器斷線");
-      }
-    };
-    ws.onerror = function () { if (!closed) onError("連不上配對伺服器（網路有通嗎？）"); };
-    ws.onclose = function () { clearInterval(hb); };
+    var ref = 1, joinRef = "1", joined = false, closed = false, queue = [], hb = null, ws = null, fails = 0, retry = null;
+    function raw(o) { if (ws && ws.readyState === 1) ws.send(JSON.stringify(o)); }
+    function connect() {
+      clearTimeout(retry);
+      clearInterval(hb);
+      joined = false;
+      joinRef = String(++ref);
+      var me = ws = new WebSocket(url);
+      me.onopen = function () {
+        if (me !== ws) return;
+        raw({ topic: topic, event: "phx_join", ref: joinRef, join_ref: joinRef,
+          payload: { config: { broadcast: { ack: false, self: false }, presence: { key: "" }, postgres_changes: [], private: false }, access_token: CFG.anonKey } });
+        hb = setInterval(function () { raw({ topic: "phoenix", event: "heartbeat", payload: {}, ref: String(++ref) }); }, 25000);
+      };
+      me.onmessage = function (e) {
+        if (me !== ws) return;
+        var m; try { m = JSON.parse(e.data); } catch (x) { return; }
+        if (m.topic !== topic) return;
+        if (m.event === "phx_reply" && m.ref === joinRef) {
+          if (m.payload && m.payload.status === "ok") {
+            joined = true; fails = 0;
+            log("realtime joined", topic);
+            queue.splice(0).forEach(send);
+            if (onReady) onReady();
+          } else onError("配對伺服器拒絕連線");
+        } else if (m.event === "broadcast" && m.payload && m.payload.event === "sig") {
+          onMsg(m.payload.payload);
+        } else if (m.event === "phx_error" || m.event === "phx_close") {
+          log("realtime channel closed, reconnect");
+          try { me.close(); } catch (x) {}
+        }
+      };
+      me.onerror = function () { log("ws error"); };
+      me.onclose = function () {
+        if (me !== ws || closed) return;
+        clearInterval(hb);
+        joined = false;
+        fails++;
+        log("ws closed, fails", fails);
+        if (fails >= 6) { onError("連不上配對伺服器（網路有通嗎？）"); return; }
+        retry = setTimeout(connect, Math.min(10000, 1000 * Math.pow(2, fails - 1)));
+      };
+    }
+    // 切回這個畫面／網路恢復：連線斷了就馬上重連，沒斷就補一次心跳確認還活著
+    function wake() {
+      if (closed || document.visibilityState === "hidden") return;
+      if (!ws || ws.readyState > 1) { fails = 0; log("wake: reconnect"); connect(); }
+      else raw({ topic: "phoenix", event: "heartbeat", payload: {}, ref: String(++ref) });
+    }
+    document.addEventListener("visibilitychange", wake);
+    window.addEventListener("online", wake);
+    window.addEventListener("pageshow", wake);
+    connect();
     function send(m) {
-      if (!joined) { queue.push(m); return; }
+      if (!joined) { queue.push(m); if (queue.length > 40) queue.shift(); return; }
       raw({ topic: topic, event: "broadcast", ref: String(++ref), join_ref: joinRef, payload: { type: "broadcast", event: "sig", payload: m } });
     }
-    return { send: send, close: function () { closed = true; clearInterval(hb); try { ws.close(); } catch (x) {} } };
+    return { send: send, close: function () {
+      closed = true; clearTimeout(retry); clearInterval(hb);
+      document.removeEventListener("visibilitychange", wake);
+      window.removeEventListener("online", wake);
+      window.removeEventListener("pageshow", wake);
+      try { if (ws) ws.close(); } catch (x) {}
+    } };
   }
 
   function sig(obj) {
@@ -180,6 +223,9 @@
     if (m.t === "offer" && m.to === N.myId && !N.hostPeer) clientAccept(m);
   }
 
+  /** 客人畫面上方的說明（C# 顯示在大廳的狀態列）。 */
+  function status(msg) { push(4, 0, null, msg); }
+
   function clientAccept(m) {
     var peer = { id: m.from, num: 0, pc: newPc(), open: false };
     N.hostPeer = peer;
@@ -187,14 +233,18 @@
     N.peers.set(0, peer);
     clearInterval(N.joinTimer);
     clearTimeout(N.joinGiveUp);
+    clearTimeout(N.waitHint);
+    status(N.attempts > 1 ? "再試一次連線（第 " + N.attempts + " 次）…" : "找到房主了，正在連線…");
     peer.pc.ondatachannel = function (e) { wireChannel(peer, e.channel); };
     watchPc(peer);
     peer.timer = setTimeout(function () {
       if (peer.open || !N || N.hostPeer !== peer) return;
+      var ice = peer.pc.iceConnectionState;
+      log("connect timeout", N.attempts, "ice", ice);
       drop(peer);
       // 沒連上：換一個身分重新加入（主機那邊舊的那條 15 秒後自己丟掉），最多試 3 次
-      if (N.attempts < 3) { log("connect timeout, retry", N.attempts); N.hostPeer = null; N.myId = rid(); startJoin(); }
-      else push(3, 0, null, "連不上房主（大家連同一個 Wi-Fi 再試一次）");
+      if (N.attempts < 3) { N.hostPeer = null; N.myId = rid(); startJoin(true); }
+      else push(3, 0, null, "連不上房主：兩支手機的網路沒辦法直接連（常見一支用 Wi-Fi、一支用 4G）。請連同一個 Wi-Fi，或請房主開手機熱點給大家連，再按一次加入。");
     }, CFG.connectTimeoutMs);
     peer.pc.setRemoteDescription(m.sdp)
       .then(function () { return peer.pc.createAnswer(); })
@@ -207,19 +257,29 @@
       .catch(function (e) { log("answer fail", e); push(3, 0, null, "連線失敗"); drop(peer); });
   }
 
-  /** 客人：每 1.5 秒喊一次「我要加入」，直到收到房主的 offer；12 秒都沒回應就報錯。 */
-  function startJoin() {
+  /**
+   * 客人：每 1.5 秒喊一次「我要加入」，直到收到房主的 offer。房主可能正在 LINE 裡傳邀請（遊戲頁被暫停），
+   * 所以最多等 60 秒；6 秒還沒回應就說明「請房主回到遊戲畫面」。retry＝連線沒成功、換身分重來（不用再等那麼久）。
+   */
+  function startJoin(retry) {
     N.attempts = (N.attempts || 0) + 1;
     clearInterval(N.joinTimer);
     clearTimeout(N.joinGiveUp);
+    clearTimeout(N.waitHint);
     var hello = function () { sig({ t: "join" }); };
     hello();
     N.joinTimer = setInterval(hello, 1500);
+    if (!retry) {
+      status("正在找房主…");
+      N.waitHint = setTimeout(function () {
+        if (N && !N.hostPeer) status("房主還沒回應：請房主回到遊戲畫面（傳完 LINE 要切回遊戲），這邊會一直等…");
+      }, 6000);
+    }
     N.joinGiveUp = setTimeout(function () {
       if (!N || N.hostPeer) return;
       clearInterval(N.joinTimer);
-      push(3, 0, null, "找不到這個房間（房號對嗎？房主開房了嗎？）");
-    }, CFG.joinTimeoutMs);
+      push(3, 0, null, "等不到房主：房主要停在遊戲的房間畫面，房號也要一樣。請房主回到遊戲後，再按一次加入。");
+    }, retry ? 20000 : CFG.joinTimeoutMs);
   }
 
   // ------------------------------------------------------------------ 對 Unity 的介面
@@ -230,7 +290,9 @@
     var onMsg = isHost ? hostOnSig : clientOnSig;
     var onErr = function (msg) { push(3, 0, null, msg); };
     var wantLocal = mode === "local" || !window.WebSocket || !CFG.supabaseUrl;
-    try { N.sig = wantLocal ? LocalSig(room, function (m) { if (N) onMsg(m); }) : SupaSig(room, function (m) { if (N) onMsg(m); }, onErr); }
+    // 房主每次（重新）連上配對頻道就喊一次「我在這」：切去 LINE 再回來時，等著的客人馬上找得到
+    var onReady = function () { if (N && N.host) sig({ t: "host", since: N.since }); };
+    try { N.sig = wantLocal ? LocalSig(room, function (m) { if (N) onMsg(m); }) : SupaSig(room, function (m) { if (N) onMsg(m); }, onErr, onReady); }
     catch (e) { onErr("配對失敗：" + e); return 0; }
     if (typeof RTCPeerConnection === "undefined") { onErr("這個瀏覽器不支援連線對戰"); return 0; }
     if (isHost) {
@@ -269,6 +331,7 @@
     N = null;
     clearInterval(n.joinTimer);
     clearTimeout(n.joinGiveUp);
+    clearTimeout(n.waitHint);
     n.peers.forEach(function (p) { p.gone = true; clearTimeout(p.timer); try { p.pc.close(); } catch (x) {} });
     if (n.sig) n.sig.close();
   }
