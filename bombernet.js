@@ -6,6 +6,8 @@
  *   測試用 ?net=local → 同一個瀏覽器的 BroadcastChannel（multi.html 一頁開好幾個遊戲）。
  *   連上之後遊戲資料全部走 WebRTC，不經過 Supabase。
  * - 不等 trickle ICE：收集完候選（最多 2.5 秒）才把整包 SDP 送出去，訊息少、好除錯。
+ * - 中繼（TURN，10-22 老闆選 Cloudflare 免費方案）：開房／加入時先跟 Supabase 的 bomber-turn 換一組短期通行證，
+ *   能直連就直連，連不上（一支 Wi-Fi、一支 4G）才繞 Cloudflare；拿不到通行證就照舊只用 STUN。?relay=1 強制走中繼（測試用）。
  * Unity 端（Assets/Plugins/WebGL/BomberNet.jslib）呼叫 window.BomberNet 的 start／send／poll／close。
  * 事件型別跟 C# 的 NetEventType 一樣：0 連上、1 斷線、2 資料、3 錯誤、4 狀態說明（給客人看「正在等什麼」）。
  * 10-22 豆豆點 LINE 邀請連結進不來：房主切到 LINE 時瀏覽器把遊戲頁暫停、配對的 websocket 被切斷又不會重連，
@@ -133,7 +135,37 @@
     });
   }
 
-  function newPc() { return new RTCPeerConnection({ iceServers: [{ urls: CFG.stun }] }); }
+  // ------------------------------------------------------------------ 中繼（TURN）通行證
+
+  var turn = { promise: null, at: 0 };
+  var forceRelay = /[?&#]relay=1/.test(location.href);
+
+  /** 連線要用的 ICE 伺服器：STUN＋Cloudflare TURN（5 小時內重用同一組；拿不到、4 秒沒回應就只用 STUN）。 */
+  function iceServers() {
+    if (turn.promise && Date.now() - turn.at < 5 * 3600 * 1000) return turn.promise;
+    var base = [{ urls: CFG.stun }];
+    turn.at = Date.now();
+    if (!CFG.supabaseUrl || !window.fetch) return (turn.promise = Promise.resolve(base));
+    var ctl = window.AbortController ? new AbortController() : null;
+    var timer = setTimeout(function () { if (ctl) ctl.abort(); }, 4000);
+    turn.promise = fetch(CFG.supabaseUrl + "/functions/v1/bomber-turn", {
+      method: "POST",
+      headers: { apikey: CFG.anonKey, Authorization: "Bearer " + CFG.anonKey, "Content-Type": "application/json" },
+      body: "{}",
+      signal: ctl ? ctl.signal : undefined,
+    }).then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (j) {
+        clearTimeout(timer);
+        if (j && j.iceServers && j.iceServers.length) { log("turn ok", j.iceServers.length); return base.concat(j.iceServers); }
+        log("turn unavailable"); turn.at = 0; return base;
+      })
+      .catch(function (e) { clearTimeout(timer); log("turn fail", String(e)); turn.at = 0; return base; });
+    return turn.promise;
+  }
+
+  function newPc(servers) {
+    return new RTCPeerConnection({ iceServers: servers, iceTransportPolicy: forceRelay ? "relay" : "all" });
+  }
 
   function wireChannel(peer, ch) {
     ch.binaryType = "arraybuffer";
@@ -153,6 +185,24 @@
     clearTimeout(peer.timer);
     log("peer open", peer.num, peer.id);
     push(0, peer.num);
+    notePath(peer);
+  }
+
+  /** 記下這條連線是直連還是繞中繼（除錯用：BomberNet.state 的 path、netdebug 的 log）。 */
+  function notePath(peer) {
+    if (!peer.pc || !peer.pc.getStats) return;
+    peer.pc.getStats().then(function (stats) {
+      var pairId = null, pairs = {}, cands = {};
+      stats.forEach(function (s) {
+        if (s.type === "transport" && s.selectedCandidatePairId) pairId = s.selectedCandidatePairId;
+        if (s.type === "candidate-pair") { pairs[s.id] = s; if (!pairId && s.nominated && s.state === "succeeded") pairId = s.id; }
+        if (s.type === "local-candidate" || s.type === "remote-candidate") cands[s.id] = s;
+      });
+      var pair = pairId && pairs[pairId];
+      var local = pair && cands[pair.localCandidateId], remote = pair && cands[pair.remoteCandidateId];
+      peer.path = local && remote ? (local.candidateType === "relay" || remote.candidateType === "relay" ? "relay" : "direct") : "?";
+      log("path", peer.num, peer.path, local && local.candidateType, remote && remote.candidateType);
+    }).catch(function () {});
   }
 
   function drop(peer) {
@@ -196,9 +246,15 @@
   }
 
   function hostCreatePeer(remoteId) {
-    var peer = { id: remoteId, num: N.nextNum++, pc: newPc(), open: false };
+    var peer = { id: remoteId, num: N.nextNum++, pc: null, open: false };
     N.byId.set(remoteId, peer);
     N.peers.set(peer.num, peer);
+    var n = N;
+    iceServers().then(function (servers) { if (N === n && !peer.gone) hostStartPeer(peer, remoteId, servers); });
+  }
+
+  function hostStartPeer(peer, remoteId, servers) {
+    peer.pc = newPc(servers);
     wireChannel(peer, peer.pc.createDataChannel("r", { ordered: true }));
     wireChannel(peer, peer.pc.createDataChannel("u", { ordered: false, maxRetransmits: 0 }));
     watchPc(peer);
@@ -227,7 +283,7 @@
   function status(msg) { push(4, 0, null, msg); }
 
   function clientAccept(m) {
-    var peer = { id: m.from, num: 0, pc: newPc(), open: false };
+    var peer = { id: m.from, num: 0, pc: null, open: false };
     N.hostPeer = peer;
     N.byId.set(m.from, peer);
     N.peers.set(0, peer);
@@ -235,6 +291,12 @@
     clearTimeout(N.joinGiveUp);
     clearTimeout(N.waitHint);
     status(N.attempts > 1 ? "再試一次連線（第 " + N.attempts + " 次）…" : "找到房主了，正在連線…");
+    var n = N;
+    iceServers().then(function (servers) { if (N === n && !peer.gone && N.hostPeer === peer) clientStartPeer(peer, m, servers); });
+  }
+
+  function clientStartPeer(peer, m, servers) {
+    peer.pc = newPc(servers);
     peer.pc.ondatachannel = function (e) { wireChannel(peer, e.channel); };
     watchPc(peer);
     peer.timer = setTimeout(function () {
@@ -295,6 +357,7 @@
     try { N.sig = wantLocal ? LocalSig(room, function (m) { if (N) onMsg(m); }) : SupaSig(room, function (m) { if (N) onMsg(m); }, onErr, onReady); }
     catch (e) { onErr("配對失敗：" + e); return 0; }
     if (typeof RTCPeerConnection === "undefined") { onErr("這個瀏覽器不支援連線對戰"); return 0; }
+    iceServers();   // 先去拿中繼通行證，等一下真的要連時通常已經拿到了
     if (isHost) {
       sig({ t: "host", since: N.since });
     } else {
@@ -342,7 +405,8 @@
     get state() {
       return N ? { host: N.host, room: N.room, sigIn: N.sigIn || 0, sigOut: N.sigOut || 0,
         peers: Array.from(N.peers.values()).map(function (p) {
-          return { num: p.num, open: p.open, ice: p.pc.iceConnectionState, conn: p.pc.connectionState, sig: p.pc.signalingState,
+          if (!p.pc) return { num: p.num, open: false, ice: "-", conn: "waiting-turn" };
+          return { num: p.num, open: p.open, path: p.path || "-", ice: p.pc.iceConnectionState, conn: p.pc.connectionState, sig: p.pc.signalingState,
             r: p.rel ? p.rel.readyState : "-", u: p.unrel ? p.unrel.readyState : "-" };
         }), queued: N.events.length } : null;
     },
