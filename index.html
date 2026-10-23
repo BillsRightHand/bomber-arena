@@ -35,8 +35,7 @@
   <div id="bar"><div id="fill"></div></div>
   <div id="err"></div>
 </div>
-<script>window.BOMBER_CDN="https://cdn.jsdelivr.net/gh/BillsRightHand/bomber-arena@711a26d1f46d0999bde9472ac639b7244c2abf55/Build";</script>
-<script src="bombernet.js?v=e2dd215"></script>
+<script src="bombernet.js"></script>
 <script>
   var canvas = document.querySelector("#unity-canvas");
   var loader = document.querySelector("#loader");
@@ -71,6 +70,8 @@
     createUnityInstance(canvas, config, function (p) { fill.style.width = Math.round(p * 100) + "%"; })
       .then(function (instance) {
         window.unityInstance = instance;
+        // 載好之前點餐網站就說上菜了：補講
+        for (; window.BomberHost.served > 0; window.BomberHost.served--) instance.SendMessage("GameApp", "OnOrderServed", "");
         loader.style.opacity = "0";
         setTimeout(function () { loader.remove(); }, 400);
         canvas.focus();
@@ -78,6 +79,17 @@
       .catch(function (m) { if (!fallback()) { err.style.display = "block"; err.textContent = "載入失敗：" + m; } });
   };
   document.body.appendChild(script);
+  // 點餐網站（把遊戲包在 iframe 裡的父頁）：「上菜了」→ 跟遊戲說；遊戲裡按「回到點餐」→ 請父頁關掉遊戲。只認父頁送來的。
+  window.BomberHost = {
+    served: 0,
+    embedded: window.parent !== window,
+    close: function () { if (this.embedded) window.parent.postMessage({ type: "bomber:close" }, "*"); }
+  };
+  window.addEventListener("message", function (e) {
+    if (e.source !== window.parent || !e.data || e.data.type !== "bomber:served") return;
+    if (window.unityInstance) window.unityInstance.SendMessage("GameApp", "OnOrderServed", "");
+    else window.BomberHost.served++;
+  });
   // 嵌在 iframe 裡（方舟網頁版、multi.html）時，第一下點擊只會拿到焦點、按鈕沒反應：按下去就先把焦點給遊戲畫布
   window.addEventListener("pointerdown", function () { if (document.activeElement !== canvas) { window.focus(); canvas.focus(); } }, true);
   // 全螢幕（遊戲裡的「全螢幕」鈕）：瀏覽器只准在使用者按下／放開的那一刻全螢幕，
